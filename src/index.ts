@@ -52,11 +52,11 @@ async function analyzeScreenshot(imageBuffer: ArrayBuffer, env: Bindings) {
   const analysisSchema = z.object({
     isImportant: z.boolean().describe("Whether this screenshot contains important information"),
     confidence: z.number().min(0).max(1).describe("Confidence score for the importance classification"),
-    categories: z.array(z.string()).describe("Categories this screenshot belongs to"),
+    category: z.string().describe("Single primary category this screenshot belongs to"),
     description: z.string().describe("Brief description of the screenshot content"),
     extractedText: z.string().describe("ALL text visible in the screenshot via OCR"),
-    contentType: z.enum(["dev", "social", "documents", "bugs", "temp", "other"]).describe("Primary content type based on classification rules"),
-    folderCategory: z.enum(["Dev", "Social", "Documents", "Bugs", "Temp"]).describe("Folder to organize screenshot into"),
+    contentType: z.enum(["dev", "social", "documents", "bugs", "temp", "secrets", "other"]).describe("Primary content type based on classification rules"),
+    folderCategory: z.enum(["Dev", "Social", "Documents", "Bugs", "Temp", "Secrets"]).describe("Folder to organize screenshot into"),
     retentionPolicy: z.enum(["keep", "delete_7_days", "delete_immediately"]).describe("How long to keep this screenshot"),
     importanceLevel: z.enum(["critical", "high", "medium", "low"]).describe("Importance level for prioritization")
   });
@@ -73,21 +73,32 @@ async function analyzeScreenshot(imageBuffer: ArrayBuffer, env: Bindings) {
               text: `Analyze this screenshot and classify it according to these rules:
 
 CLASSIFICATION RULES:
-- Code/terminal screenshots → Category: "Dev", Keep permanently
-- Memes/social media → Category: "Social", Delete after 7 days  
+- SENSITIVE/SECRET DATA → Category: "Secrets" (API keys, passwords, tokens, credentials, private keys, .env files)
+- ERROR MESSAGES/RED TEXT → Category: "Bugs" (stack traces, error dialogs, failed commands, red terminal text, exceptions)
+- IDE/CODE WORK → Category: "Dev" (VSCode, IDEs, successful builds, green terminal, working code, file explorers)
 - Important docs/receipts → Category: "Documents", Keep permanently
-- Error messages/bugs → Category: "Bugs", Keep permanently
+- Memes/social media → Category: "Social", Delete after 7 days  
 - Temporary/junk content → Category: "Temp", Delete immediately
-- Screenshots with text → Extract all text via OCR and categorize appropriately
+
+CRITICAL PRIORITY ORDER:
+1. SECRETS FIRST: If contains API keys, passwords, tokens, "secret", "key", "password", "token", "credential" → "Secrets"
+2. BUGS: Red terminal text, error messages, stack traces, "error", "failed", "exception" → "Bugs"  
+3. DEV: Green/normal terminal, IDEs, successful code, file trees → "Dev"
+
+VISUAL INDICATORS:
+- Red text/background = "Bugs"
+- Green text/checkmarks = "Dev" 
+- IDE interfaces (VSCode, etc) = "Dev"
+- Terminal without red errors = "Dev"
 
 INSTRUCTIONS:
 1. Extract ALL visible text from the screenshot
-2. Classify the screenshot type based on content
-3. Determine retention policy (keep/delete/7-day expiry)
-4. Set importance level (critical for docs/receipts, high for dev/bugs, low for social/temp)
-5. Assign appropriate folder category
+2. Look specifically for error indicators first
+3. If ANY error/failure content found → "Bugs" category
+4. Otherwise classify normally
+5. Set importance level (critical for docs/receipts, high for dev/bugs, low for social/temp)
 
-Be thorough in text extraction and accurate in classification.`
+Be extra careful to catch ALL error-related screenshots as "Bugs".`
             },
             {
               type: "image",
@@ -105,7 +116,7 @@ Be thorough in text extraction and accurate in classification.`
     return {
       isImportant: false,
       confidence: 0.5,
-      categories: ["uncategorized"],
+      category: "uncategorized",
       description: "Analysis failed",
       extractedText: "Analysis failed - could not extract text",
       contentType: "other" as const,
@@ -174,33 +185,32 @@ app.post("/upload", async (c) => {
       resultData: analysis
     });
 
-    // Handle categories
-    for (const categoryName of analysis.categories) {
-      // Get or create category
-      let [category] = await db.select()
-        .from(schema.categories)
-        .where(eq(schema.categories.name, categoryName));
+    // Handle single category
+    const categoryName = analysis.folderCategory;
+    // Get or create category
+    let [category] = await db.select()
+      .from(schema.categories)
+      .where(eq(schema.categories.name, categoryName));
 
-      if (!category) {
-        [category] = await db.insert(schema.categories)
-          .values({ name: categoryName })
-          .returning();
-      }
-
-      // Link screenshot to category
-      await db.insert(schema.screenshotCategories).values({
-        screenshotId: screenshot.id,
-        categoryId: category.id,
-        confidence: analysis.confidence
-      });
+    if (!category) {
+      [category] = await db.insert(schema.categories)
+        .values({ name: categoryName })
+        .returning();
     }
+
+    // Link screenshot to category
+    await db.insert(schema.screenshotCategories).values({
+      screenshotId: screenshot.id,
+      categoryId: category.id,
+      confidence: analysis.confidence
+    });
 
     return c.json({
       id: screenshot.id,
       filename: screenshot.filename,
       isImportant: analysis.isImportant,
       confidence: analysis.confidence,
-      categories: analysis.categories,
+      category: analysis.folderCategory,
       description: analysis.description
     }, 201);
 
