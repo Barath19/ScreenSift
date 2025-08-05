@@ -1,5 +1,7 @@
 # ScreenSift MCP 🔍
 
+![ScreenSift Banner](banner.png)
+
 > AI-powered screenshot classification and organization system with automatic folder management
 
 ## 🌟 Features
