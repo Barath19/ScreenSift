@@ -127,6 +127,43 @@ Be extra careful to catch ALL error-related screenshots as "Bugs".`
   }
 }
 
+// Analyze screenshot without saving (lightweight)
+app.post("/analyze", async (c) => {
+  try {
+    const formData = await c.req.formData();
+    const file = formData.get('file') as File | null;
+    
+    if (!file || !(file instanceof File)) {
+      return c.json({ error: "No file provided" }, 400);
+    }
+
+    if (!file.type.startsWith('image/')) {
+      return c.json({ error: "File must be an image" }, 400);
+    }
+
+    const arrayBuffer = await file.arrayBuffer();
+    
+    // Analyze screenshot without saving
+    const analysis = await analyzeScreenshot(arrayBuffer, c.env);
+
+    return c.json({
+      filename: file.name,
+      isImportant: analysis.isImportant,
+      confidence: analysis.confidence,
+      category: analysis.folderCategory,
+      description: analysis.description,
+      extractedText: analysis.extractedText,
+      contentType: analysis.contentType,
+      retentionPolicy: analysis.retentionPolicy,
+      importanceLevel: analysis.importanceLevel
+    }, 200);
+
+  } catch (error) {
+    console.error("Analysis failed:", error);
+    return c.json({ error: "Analysis failed" }, 500);
+  }
+});
+
 // Upload screenshot endpoint
 app.post("/upload", async (c) => {
   const db = drizzle(c.env.DB);
