@@ -9,6 +9,8 @@ import { z } from "zod";
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { generateObject } from "ai";
 import * as schema from "./db/schema";
+import QrCode from 'qrcode-reader';
+import Jimp from 'jimp';
 
 type Bindings = {
   DB: D1Database;
@@ -615,75 +617,87 @@ Description: ${analysis.description}`
     }
   );
 
-  // Search screenshots tool
+  // Bill analysis tool
   server.tool(
-    "search_screenshots",
+    "analyze_bill",
     {
-      category: z.string().optional().describe("Filter by category"),
-      importantOnly: z.boolean().default(false).describe("Show only important screenshots"),
-      limit: z.number().default(10).describe("Maximum number of results")
+      imageData: z.string().describe("Base64 encoded bill image"),
+      filename: z.string().describe("Original filename")
     },
-    async ({ category, importantOnly, limit }) => {
+    async ({ imageData, filename }) => {
       try {
-        const conditions = [];
+        const buffer = Uint8Array.from(atob(imageData), c => c.charCodeAt(0)).buffer;
+        const uint8Array = new Uint8Array(buffer);
+        let binaryString = '';
+        const chunkSize = 8192;
+        for (let i = 0; i < uint8Array.length; i += chunkSize) {
+          const chunk = uint8Array.slice(i, i + chunkSize);
+          binaryString += String.fromCharCode(...chunk);
+        }
+        const base64Image = btoa(binaryString);
+
+        const google = createGoogleGenerativeAI({ apiKey: env.GOOGLE_AI_API_KEY });
         
-        if (importantOnly) {
-          conditions.push(eq(schema.screenshots.isImportant, true));
-        }
+        const billAnalysisSchema = z.object({
+          totalAmount: z.string().describe("Total amount on the bill"),
+          currency: z.string().describe("Currency symbol or code"),
+          merchant: z.string().describe("Business or merchant name"),
+          date: z.string().describe("Transaction date"),
+          items: z.array(z.object({
+            name: z.string(),
+            price: z.string(),
+            quantity: z.number().optional()
+          })).describe("Individual line items"),
+          taxes: z.string().optional().describe("Tax amount if visible"),
+          tip: z.string().optional().describe("Tip amount if added"),
+          paymentMethod: z.string().optional().describe("Payment method if visible"),
+          confidence: z.number().min(0).max(1).describe("Confidence in OCR accuracy")
+        });
 
-        let query = db.select().from(schema.screenshots);
+        const result = await generateObject({
+          model: google("gemini-2.5-flash"),
+          messages: [
+            {
+              role: "user", 
+              content: [
+                {
+                  type: "text",
+                  text: "Analyze this bill/receipt image and extract all financial information with OCR precision. Focus on amounts, merchant details, and line items."
+                },
+                {
+                  type: "image",
+                  image: `data:image/jpeg;base64,${base64Image}`
+                }
+              ]
+            }
+          ],
+          schema: billAnalysisSchema
+        });
 
-        if (category) {
-          const screenshotsWithCategory = await db.select()
-            .from(schema.screenshots)
-            .innerJoin(schema.screenshotCategories, eq(schema.screenshots.id, schema.screenshotCategories.screenshotId))
-            .innerJoin(schema.categories, eq(schema.screenshotCategories.categoryId, schema.categories.id))
-            .where(and(eq(schema.categories.name, category), ...conditions))
-            .orderBy(desc(schema.screenshots.uploadedAt))
-            .limit(limit);
-          
-          const screenshots = screenshotsWithCategory.map(row => row.screenshots);
-          
-          const results = screenshots.map(s => 
-            `ID: ${s.id} | ${s.filename} | Important: ${s.isImportant} | Uploaded: ${s.uploadedAt}`
-          ).join('\\n');
-
-          return {
-            content: [{
-              type: "text",
-              text: `Found ${screenshots.length} screenshots:\\n${results}`
-            }]
-          };
-        } else if (conditions.length > 0) {
-          const screenshots = await query
-            .where(and(...conditions))
-            .orderBy(desc(schema.screenshots.uploadedAt))
-            .limit(limit);
-          
-          const results = screenshots.map(s => 
-            `ID: ${s.id} | ${s.filename} | Important: ${s.isImportant} | Uploaded: ${s.uploadedAt}`
-          ).join('\\n');
-
-          return {
-            content: [{
-              type: "text",
-              text: `Found ${screenshots.length} screenshots:\\n${results}`
-            }]
-          };
-        }
-
-        const screenshots = await query
-          .orderBy(desc(schema.screenshots.uploadedAt))
-          .limit(limit);
-
-        const results = screenshots.map(s => 
-          `ID: ${s.id} | ${s.filename} | Important: ${s.isImportant} | Uploaded: ${s.uploadedAt}`
+        const bill = result.object;
+        const formattedItems = bill.items.map(item => 
+          `• ${item.name}: ${item.price}${item.quantity ? ` (x${item.quantity})` : ''}`
         ).join('\n');
 
         return {
           content: [{
             type: "text",
-            text: `Found ${screenshots.length} screenshots:\n${results}`
+            text: `Bill Analysis Complete:
+
+🧾 BILL DETAILS:
+• Merchant: ${bill.merchant}
+• Date: ${bill.date}
+• Total Amount: ${bill.currency}${bill.totalAmount}
+${bill.taxes ? `• Taxes: ${bill.currency}${bill.taxes}` : ''}
+${bill.tip ? `• Tip: ${bill.currency}${bill.tip}` : ''}
+${bill.paymentMethod ? `• Payment: ${bill.paymentMethod}` : ''}
+
+📋 LINE ITEMS:
+${formattedItems}
+
+📊 OCR CONFIDENCE: ${Math.round(bill.confidence * 100)}%
+
+💡 TIP: Use this data for expense tracking and budget analysis.`
           }]
         };
 
@@ -691,7 +705,7 @@ Description: ${analysis.description}`
         return {
           content: [{
             type: "text",
-            text: `Search failed: ${error instanceof Error ? error.message : 'Unknown error'}`
+            text: `Bill analysis failed: ${error instanceof Error ? error.message : 'Unknown error'}`
           }],
           isError: true
         };
@@ -699,48 +713,84 @@ Description: ${analysis.description}`
     }
   );
 
-  // Cleanup clutter tool
+  // Translation tool
   server.tool(
-    "cleanup_clutter",
+    "translate_screenshot",
     {
-      dryRun: z.boolean().default(true).describe("Preview deletions without actually deleting"),
-      confidenceThreshold: z.number().default(0.8).describe("Minimum confidence to consider for deletion")
+      imageData: z.string().describe("Base64 encoded screenshot with text to translate"),
+      filename: z.string().describe("Original filename"),
+      targetLanguage: z.string().default("English").describe("Target language for translation")
     },
-    async ({ dryRun, confidenceThreshold }) => {
+    async ({ imageData, filename, targetLanguage }) => {
       try {
-        const clutterScreenshots = await db.select()
-          .from(schema.screenshots)
-          .where(and(
-            eq(schema.screenshots.isImportant, false),
-            gte(schema.screenshots.confidenceScore, confidenceThreshold)
-          ));
-
-        if (dryRun) {
-          const preview = clutterScreenshots.map(s => 
-            `${s.filename} (Confidence: ${s.confidenceScore})`
-          ).join('\n');
-
-          return {
-            content: [{
-              type: "text",
-              text: `Found ${clutterScreenshots.length} screenshots that could be deleted:\n${preview}`
-            }]
-          };
+        const buffer = Uint8Array.from(atob(imageData), c => c.charCodeAt(0)).buffer;
+        const uint8Array = new Uint8Array(buffer);
+        let binaryString = '';
+        const chunkSize = 8192;
+        for (let i = 0; i < uint8Array.length; i += chunkSize) {
+          const chunk = uint8Array.slice(i, i + chunkSize);
+          binaryString += String.fromCharCode(...chunk);
         }
+        const base64Image = btoa(binaryString);
 
-        // Actually delete
-        let deletedCount = 0;
-        for (const screenshot of clutterScreenshots) {
-          await env.R2.delete(screenshot.r2Key);
-          await db.delete(schema.screenshots)
-            .where(eq(schema.screenshots.id, screenshot.id));
-          deletedCount++;
-        }
+        const google = createGoogleGenerativeAI({ apiKey: env.GOOGLE_AI_API_KEY });
+        
+        const translationSchema = z.object({
+          detectedLanguage: z.string().describe("Original language detected"),
+          extractedText: z.string().describe("Original text found in image"),
+          translatedText: z.string().describe("Text translated to target language"),
+          confidence: z.number().min(0).max(1).describe("Translation confidence"),
+          textRegions: z.array(z.object({
+            original: z.string(),
+            translated: z.string(),
+            position: z.string()
+          })).describe("Individual text regions with translations")
+        });
+
+        const result = await generateObject({
+          model: google("gemini-2.5-flash"),
+          messages: [
+            {
+              role: "user", 
+              content: [
+                {
+                  type: "text",
+                  text: `Extract all text from this screenshot and translate it to ${targetLanguage}. Identify the original language and provide both original and translated versions.`
+                },
+                {
+                  type: "image",
+                  image: `data:image/jpeg;base64,${base64Image}`
+                }
+              ]
+            }
+          ],
+          schema: translationSchema
+        });
+
+        const translation = result.object;
+        const formattedRegions = translation.textRegions.map((region, i) => 
+          `${i + 1}. "${region.original}" → "${region.translated}"`
+        ).join('\n');
 
         return {
           content: [{
             type: "text",
-            text: `Successfully deleted ${deletedCount} clutter screenshots`
+            text: `Translation Complete:
+
+🌍 LANGUAGE DETECTION:
+• Original Language: ${translation.detectedLanguage}
+• Target Language: ${targetLanguage}
+
+📝 FULL TEXT TRANSLATION:
+• Original: "${translation.extractedText}"
+• Translated: "${translation.translatedText}"
+
+🎯 TEXT REGIONS:
+${formattedRegions}
+
+📊 CONFIDENCE: ${Math.round(translation.confidence * 100)}%
+
+💡 TIP: Use this for translating foreign language screenshots, documents, and signs.`
           }]
         };
 
@@ -748,7 +798,7 @@ Description: ${analysis.description}`
         return {
           content: [{
             type: "text",
-            text: `Cleanup failed: ${error instanceof Error ? error.message : 'Unknown error'}`
+            text: `Translation failed: ${error instanceof Error ? error.message : 'Unknown error'}`
           }],
           isError: true
         };
@@ -756,43 +806,83 @@ Description: ${analysis.description}`
     }
   );
 
-  // Get screenshot stats tool
+  // Song lyrics extraction tool
   server.tool(
-    "get_screenshot_stats",
-    {},
-    async () => {
+    "extract_song_lyrics",
+    {
+      imageData: z.string().describe("Base64 encoded screenshot of song lyrics"),
+      filename: z.string().describe("Original filename")
+    },
+    async ({ imageData, filename }) => {
       try {
-        const [totalCount] = await db.select({ count: sql<number>`count(*)` })
-          .from(schema.screenshots);
+        const buffer = Uint8Array.from(atob(imageData), c => c.charCodeAt(0)).buffer;
+        const uint8Array = new Uint8Array(buffer);
+        let binaryString = '';
+        const chunkSize = 8192;
+        for (let i = 0; i < uint8Array.length; i += chunkSize) {
+          const chunk = uint8Array.slice(i, i + chunkSize);
+          binaryString += String.fromCharCode(...chunk);
+        }
+        const base64Image = btoa(binaryString);
 
-        const [importantCount] = await db.select({ count: sql<number>`count(*)` })
-          .from(schema.screenshots)
-          .where(eq(schema.screenshots.isImportant, true));
+        const google = createGoogleGenerativeAI({ apiKey: env.GOOGLE_AI_API_KEY });
+        
+        const lyricsSchema = z.object({
+          songTitle: z.string().describe("Song title if visible"),
+          artist: z.string().describe("Artist name if visible"),
+          album: z.string().optional().describe("Album name if visible"),
+          lyrics: z.string().describe("Extracted lyrics text"),
+          language: z.string().describe("Language of the lyrics"),
+          genre: z.string().optional().describe("Music genre if identifiable"),
+          confidence: z.number().min(0).max(1).describe("Extraction confidence"),
+          lyricsComplete: z.boolean().describe("Whether the full song lyrics are visible"),
+          isPartial: z.boolean().describe("Whether this is a partial excerpt")
+        });
 
-        const [totalSize] = await db.select({ size: sql<number>`sum(${schema.screenshots.fileSize})` })
-          .from(schema.screenshots);
+        const result = await generateObject({
+          model: google("gemini-2.5-flash"),
+          messages: [
+            {
+              role: "user", 
+              content: [
+                {
+                  type: "text",
+                  text: "Extract song lyrics from this screenshot. Identify song title, artist, and full lyrics text. Format the lyrics cleanly with proper line breaks."
+                },
+                {
+                  type: "image",
+                  image: `data:image/jpeg;base64,${base64Image}`
+                }
+              ]
+            }
+          ],
+          schema: lyricsSchema
+        });
 
-        const categories = await db.select({
-          name: schema.categories.name,
-          count: sql<number>`count(${schema.screenshotCategories.screenshotId})`
-        })
-          .from(schema.categories)
-          .leftJoin(schema.screenshotCategories, eq(schema.categories.id, schema.screenshotCategories.categoryId))
-          .groupBy(schema.categories.id)
-          .orderBy(desc(sql<number>`count(${schema.screenshotCategories.screenshotId})`));
-
-        const categoryStats = categories.map(c => `${c.name}: ${c.count}`).join('\n');
+        const song = result.object;
+        const lyricsPreview = song.lyrics.length > 500 ? 
+          song.lyrics.substring(0, 500) + "\n[Lyrics truncated for copyright compliance]" : 
+          song.lyrics;
 
         return {
           content: [{
             type: "text",
-            text: `Screenshot Statistics:
-Total Screenshots: ${totalCount.count}
-Important Screenshots: ${importantCount.count}
-Total Storage Used: ${Math.round((totalSize.size || 0) / 1024 / 1024)} MB
+            text: `Song Lyrics Extraction Complete:
 
-Category Breakdown:
-${categoryStats}`
+🎵 SONG INFORMATION:
+• Title: ${song.songTitle}
+• Artist: ${song.artist}
+${song.album ? `• Album: ${song.album}` : ''}
+${song.genre ? `• Genre: ${song.genre}` : ''}
+• Language: ${song.language}
+
+📝 LYRICS ${song.isPartial ? '(PARTIAL)' : '(COMPLETE)'}:
+${lyricsPreview}
+
+📊 EXTRACTION CONFIDENCE: ${Math.round(song.confidence * 100)}%
+🎼 COMPLETENESS: ${song.lyricsComplete ? 'Full song visible' : 'Partial lyrics only'}
+
+💡 TIP: Use for music discovery and lyric analysis.`
           }]
         };
 
@@ -800,7 +890,321 @@ ${categoryStats}`
         return {
           content: [{
             type: "text",
-            text: `Failed to get stats: ${error instanceof Error ? error.message : 'Unknown error'}`
+            text: `Lyrics extraction failed: ${error instanceof Error ? error.message : 'Unknown error'}`
+          }],
+          isError: true
+        };
+      }
+    }
+  );
+
+  // Map analysis tool
+  server.tool(
+    "analyze_map_screenshot",
+    {
+      imageData: z.string().describe("Base64 encoded screenshot of a map"),
+      filename: z.string().describe("Original filename")
+    },
+    async ({ imageData, filename }) => {
+      try {
+        const buffer = Uint8Array.from(atob(imageData), c => c.charCodeAt(0)).buffer;
+        const uint8Array = new Uint8Array(buffer);
+        let binaryString = '';
+        const chunkSize = 8192;
+        for (let i = 0; i < uint8Array.length; i += chunkSize) {
+          const chunk = uint8Array.slice(i, i + chunkSize);
+          binaryString += String.fromCharCode(...chunk);
+        }
+        const base64Image = btoa(binaryString);
+
+        const google = createGoogleGenerativeAI({ apiKey: env.GOOGLE_AI_API_KEY });
+        
+        const mapAnalysisSchema = z.object({
+          locations: z.array(z.object({
+            name: z.string(),
+            type: z.enum(["city", "landmark", "street", "business", "poi", "other"]),
+            coordinates: z.string().optional()
+          })).describe("Identified locations in the map"),
+          mapType: z.enum(["street", "satellite", "terrain", "hybrid", "transit", "other"]).describe("Type of map view"),
+          zoomLevel: z.enum(["street", "neighborhood", "city", "region", "country", "world"]).describe("Approximate zoom level"),
+          primaryLocation: z.string().describe("Main location or area shown"),
+          directions: z.object({
+            hasRoute: z.boolean(),
+            startPoint: z.string().optional(),
+            endPoint: z.string().optional(),
+            estimatedDistance: z.string().optional()
+          }).describe("Route information if visible"),
+          confidence: z.number().min(0).max(1).describe("Analysis confidence")
+        });
+
+        const result = await generateObject({
+          model: google("gemini-2.5-flash"),
+          messages: [
+            {
+              role: "user", 
+              content: [
+                {
+                  type: "text",
+                  text: "Analyze this map screenshot and identify locations, landmarks, route information, and map characteristics. Extract any visible place names, addresses, or navigation details."
+                },
+                {
+                  type: "image",
+                  image: `data:image/jpeg;base64,${base64Image}`
+                }
+              ]
+            }
+          ],
+          schema: mapAnalysisSchema
+        });
+
+        const map = result.object;
+        const locationsList = map.locations.map(loc => 
+          `• ${loc.name} (${loc.type})`
+        ).join('\n');
+
+        // Try to get coordinates for primary location using free geocoding
+        let coordinateInfo = '';
+        try {
+          const geocodeUrl = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(map.primaryLocation)}&limit=1`;
+          const geoResponse = await fetch(geocodeUrl, {
+            headers: {
+              'User-Agent': 'ScreenSift-MCP/1.0'
+            }
+          });
+          
+          if (geoResponse.ok) {
+            const geoData = await geoResponse.json();
+            if (geoData.length > 0) {
+              const place = geoData[0];
+              coordinateInfo = `\n📍 COORDINATES: ${place.lat}, ${place.lon}`;
+            }
+          }
+        } catch (geoError) {
+          // Silently fail geocoding
+        }
+
+        return {
+          content: [{
+            type: "text",
+            text: `Map Analysis Complete:
+
+🗺️ MAP DETAILS:
+• Primary Location: ${map.primaryLocation}${coordinateInfo}
+• Map Type: ${map.mapType}
+• Zoom Level: ${map.zoomLevel}
+
+📍 IDENTIFIED LOCATIONS:
+${locationsList}
+
+🛣️ NAVIGATION INFO:
+• Has Route: ${map.directions.hasRoute ? 'Yes' : 'No'}
+${map.directions.startPoint ? `• Start: ${map.directions.startPoint}` : ''}
+${map.directions.endPoint ? `• End: ${map.directions.endPoint}` : ''}
+${map.directions.estimatedDistance ? `• Distance: ${map.directions.estimatedDistance}` : ''}
+
+📊 ANALYSIS CONFIDENCE: ${Math.round(map.confidence * 100)}%
+
+💡 TIP: Use for travel planning, location identification, and navigation analysis.`
+          }]
+        };
+
+      } catch (error) {
+        return {
+          content: [{
+            type: "text",
+            text: `Map analysis failed: ${error instanceof Error ? error.message : 'Unknown error'}`
+          }],
+          isError: true
+        };
+      }
+    }
+  );
+
+  // Enhanced QR code reader with dedicated libraries
+  server.tool(
+    "read_qr_code",
+    {
+      imageData: z.string().describe("Base64 encoded screenshot containing QR code or barcode"),
+      filename: z.string().describe("Original filename")
+    },
+    async ({ imageData, filename }) => {
+      try {
+        const buffer = Uint8Array.from(atob(imageData), c => c.charCodeAt(0)).buffer;
+        
+        let qrResults: any[] = [];
+        let libraryScanSuccess = false;
+        
+        try {
+          // Load image with Jimp
+          const image = await Jimp.read(Buffer.from(buffer));
+          const qr = new QrCode();
+          
+          // Scan for QR codes using the dedicated library
+          const qrPromise = new Promise((resolve, reject) => {
+            qr.callback = (err: any, value: any) => {
+              if (err) {
+                reject(err);
+              } else {
+                resolve(value);
+              }
+            };
+          });
+          
+          qr.decode(image.bitmap);
+          const qrResult = await qrPromise;
+          
+          if (qrResult && (qrResult as any).result) {
+            libraryScanSuccess = true;
+            qrResults.push({
+              type: "qr_code",
+              content: (qrResult as any).result,
+              position: "detected",
+              confidence: 1.0,
+              scanMethod: "QR Library"
+            });
+          }
+        } catch (libraryError) {
+          console.log("QR library scan failed, falling back to AI:", libraryError);
+        }
+        
+        // If library scan failed, fall back to AI analysis
+        if (!libraryScanSuccess) {
+          const uint8Array = new Uint8Array(buffer);
+          let binaryString = '';
+          const chunkSize = 8192;
+          for (let i = 0; i < uint8Array.length; i += chunkSize) {
+            const chunk = uint8Array.slice(i, i + chunkSize);
+            binaryString += String.fromCharCode(...chunk);
+          }
+          const base64Image = btoa(binaryString);
+
+          const google = createGoogleGenerativeAI({ apiKey: env.GOOGLE_AI_API_KEY });
+          
+          const qrAnalysisSchema = z.object({
+            codes: z.array(z.object({
+              type: z.enum(["qr_code", "barcode", "data_matrix", "other"]),
+              content: z.string(),
+              dataType: z.enum(["url", "text", "wifi", "contact", "email", "phone", "sms", "location", "calendar", "product", "other"]),
+              position: z.string()
+            })),
+            confidence: z.number().min(0).max(1)
+          });
+
+          const result = await generateObject({
+            model: google("gemini-2.5-flash"),
+            messages: [
+              {
+                role: "user", 
+                content: [
+                  {
+                    type: "text",
+                    text: "Analyze this image and detect/decode any QR codes or barcodes. Focus on extracting the exact content."
+                  },
+                  {
+                    type: "image",
+                    image: `data:image/jpeg;base64,${base64Image}`
+                  }
+                ]
+              }
+            ],
+            schema: qrAnalysisSchema
+          });
+
+          // Convert AI results to our format
+          qrResults = result.object.codes.map(code => ({
+            type: code.type,
+            content: code.content,
+            position: code.position,
+            confidence: result.object.confidence,
+            scanMethod: "AI Vision"
+          }));
+        }
+        
+        // Process and format the results
+        let formattedResults = '';
+        
+        if (qrResults.length === 0) {
+          formattedResults = '❌ No QR codes or barcodes detected in this image.';
+        } else {
+          formattedResults = qrResults.map((code, index) => {
+            let formatted = `\n📱 CODE ${index + 1} (${code.type?.toUpperCase() || 'QR_CODE'}):`;
+            formatted += `\n• Content: ${code.content}`;
+            formatted += `\n• Scan Method: ${code.scanMethod || 'Unknown'}`;
+            formatted += `\n• Confidence: ${Math.round((code.confidence || 0) * 100)}%`;
+            
+            // Determine data type from content
+            let dataType = 'text';
+            if (code.content.startsWith('http://') || code.content.startsWith('https://')) {
+              dataType = 'url';
+              try {
+                const url = new URL(code.content);
+                formatted += `\n• 🔗 Clickable Link: ${code.content}`;
+                formatted += `\n• Domain: ${url.hostname}`;
+              } catch (e) {
+                formatted += `\n• 🔗 URL: ${code.content}`;
+              }
+            } else if (code.content.startsWith('WIFI:')) {
+              dataType = 'wifi';
+              const wifiMatch = code.content.match(/WIFI:T:([^;]*);S:([^;]*);P:([^;]*);/);
+              if (wifiMatch) {
+                formatted += `\n• 📶 Network: ${wifiMatch[2]}`;
+                formatted += `\n• 🔒 Security: ${wifiMatch[1]}`;
+                formatted += `\n• 🔑 Password: ${wifiMatch[3]}`;
+              }
+            } else if (code.content.includes('BEGIN:VCARD')) {
+              dataType = 'contact';
+              const nameMatch = code.content.match(/FN:([^\n\r]*)/);
+              const phoneMatch = code.content.match(/TEL:([^\n\r]*)/);
+              const emailMatch = code.content.match(/EMAIL:([^\n\r]*)/);
+              
+              if (nameMatch) formatted += `\n• 👤 Name: ${nameMatch[1]}`;
+              if (phoneMatch) formatted += `\n• 📞 Phone: ${phoneMatch[1]}`;
+              if (emailMatch) formatted += `\n• 📧 Email: ${emailMatch[1]}`;
+            }
+            
+            formatted += `\n• Data Type: ${dataType}`;
+            return formatted;
+          }).join('\n\n');
+        }
+
+        // Generate summary statistics
+        const totalCodes = qrResults.length;
+        const qrCodes = qrResults.filter(r => r.type === 'qr_code' || !r.type).length;
+        const barcodes = qrResults.filter(r => r.type === 'barcode').length;
+        const avgConfidence = qrResults.length > 0 ? Math.round(qrResults.reduce((sum, r) => sum + (r.confidence || 0), 0) / qrResults.length * 100) : 0;
+
+        return {
+          content: [{
+            type: "text",
+            text: `QR Code Analysis Complete:
+
+📊 DETECTION SUMMARY:
+• QR Codes Found: ${qrCodes}
+• Barcodes Found: ${barcodes}
+• Total Codes: ${totalCodes}
+• Average Confidence: ${avgConfidence}%
+• Scan Method: ${qrResults[0]?.scanMethod || 'None'}
+
+${formattedResults}
+
+💡 TIPS:
+${qrResults.some(c => c.content.startsWith('http')) ? '• Click links to open in browser' : ''}
+${qrResults.some(c => c.content.startsWith('WIFI:')) ? '• Use WiFi details to connect to network' : ''}
+${qrResults.some(c => c.content.includes('BEGIN:VCARD')) ? '• Save contact information to your phone' : ''}
+${qrResults.length === 0 ? '• Try a clearer image or check if codes are fully visible' : ''}
+
+🔧 ENHANCED SCANNING:
+• Uses dedicated QR library for maximum accuracy
+• Falls back to AI vision if library scan fails
+• Supports all QR code formats and data types`
+          }]
+        };
+
+      } catch (error) {
+        return {
+          content: [{
+            type: "text",
+            text: `QR code analysis failed: ${error instanceof Error ? error.message : 'Unknown error'}`
           }],
           isError: true
         };

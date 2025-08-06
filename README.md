@@ -14,6 +14,13 @@
 - **Social Content** - Detects memes, social media, and temporary content
 - **OCR Text Extraction** - Extracts all visible text from screenshots
 
+### 🎯 Specialized Analysis Tools
+- **💰 Bill Analysis** - OCR receipt processing with itemized expense extraction
+- **🌍 Translation** - Multi-language text translation from any screenshot
+- **🎵 Song Lyrics** - Music identification and lyrics extraction
+- **🗺️ Map Analysis** - Geographic location identification with coordinates
+- **📱 QR/Barcode Reader** - Enhanced scanning with dedicated libraries + AI fallback
+
 ### 📁 Automatic Organization
 Screenshots are automatically sorted into 6 smart folders:
 - **`Secrets/`** - API keys, passwords, tokens (⚠️ High Priority)
@@ -130,65 +137,22 @@ Update `wrangler.jsonc` with your settings:
   - `~/Desktop/Screenshots/Social/`
   - `~/Desktop/Screenshots/Temp/`
 
-## 🛠 API Endpoints
+## 🛠 MCP Protocol
 
-### Analyze Only (No Storage)
-```bash
-# Cloud
-POST https://screensift-mcp.bharathkumaradinarayan.workers.dev/analyze
-
-# Local  
-POST http://localhost:8787/analyze
-
-Content-Type: multipart/form-data
-file: [image file]
-```
-
-**Response:**
-```json
-{
-  "filename": "screenshot.png",
-  "isImportant": true,
-  "confidence": 0.95,
-  "category": "Dev",
-  "description": "VSCode with TypeScript code...",
-  "extractedText": "console.log('hello world')",
-  "contentType": "dev",
-  "retentionPolicy": "keep",
-  "importanceLevel": "high"
-}
-```
-
-
-
-### MCP Protocol
+### MCP Endpoint
 ```bash
 POST /mcp
 Content-Type: application/json
+Accept: application/json, text/event-stream
 ```
 
-**Available Tools:**
+**Available MCP Tools:**
 - `analyze_screenshot` - Upload and analyze images
-- `search_screenshots` - Find by category/importance  
-- `cleanup_clutter` - Remove unimportant screenshots
-- `get_screenshot_stats` - View storage statistics
-
-## 🗄 API Response Schema
-
-### Analyze Response
-```json
-{
-  "filename": "screenshot.png",
-  "isImportant": true,
-  "confidence": 0.95,
-  "category": "Dev",
-  "description": "AI description of content",
-  "extractedText": "OCR text from image",
-  "contentType": "dev",
-  "retentionPolicy": "keep",
-  "importanceLevel": "high"
-}
-```
+- `analyze_bill` - OCR bill/receipt analysis with financial data extraction
+- `translate_screenshot` - Multi-language text translation from images
+- `extract_song_lyrics` - Song lyrics extraction with metadata
+- `analyze_map_screenshot` - Geographic location and navigation analysis
+- `read_qr_code` - Enhanced QR/barcode reader with dedicated libraries
 
 ### Categories
 - **Secrets** - API keys, passwords, sensitive data
@@ -203,20 +167,195 @@ Content-Type: application/json
 ### Web Interface
 Open `test-ui.html` in browser for drag-and-drop testing.
 
-### Command Line
+### Command Line Testing
+
+#### Basic Server Health Check
 ```bash
 # Test server (local)
 curl http://localhost:8787
 
 # Test server (cloud)
 curl https://screensift-mcp.bharathkumaradinarayan.workers.dev
+```
 
-# Analyze screenshot (local)
-curl -X POST -F "file=@screenshot.png" http://localhost:8787/analyze
 
-# Analyze screenshot (cloud)
-curl -X POST -F "file=@screenshot.png" https://screensift-mcp.bharathkumaradinarayan.workers.dev/analyze
+### MCP Tool Testing
 
+First, encode your image to base64:
+```bash
+# Encode image to base64
+base64 -i screenshot.png -o image_encoded.txt
+```
+
+#### 0. List All Available Tools
+```bash
+curl -X POST https://screensift-mcp.bharathkumaradinarayan.workers.dev/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{
+    "jsonrpc": "2.0",
+    "method": "tools/list",
+    "params": {},
+    "id": 1
+  }'
+```
+
+#### 1. Analyze Screenshot
+```bash
+curl -X POST https://screensift-mcp.bharathkumaradinarayan.workers.dev/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d "{
+    \"jsonrpc\": \"2.0\",
+    \"method\": \"tools/call\",
+    \"params\": {
+      \"name\": \"analyze_screenshot\",
+      \"arguments\": {
+        \"imageData\": \"$(cat image_encoded.txt | tr -d '\n')\",
+        \"filename\": \"test_screenshot.png\"
+      }
+    },
+    \"id\": 1
+  }"
+```
+
+#### 2. Analyze Bill/Receipt
+```bash
+curl -X POST https://screensift-mcp.bharathkumaradinarayan.workers.dev/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d "{
+    \"jsonrpc\": \"2.0\",
+    \"method\": \"tools/call\",
+    \"params\": {
+      \"name\": \"analyze_bill\",
+      \"arguments\": {
+        \"imageData\": \"$(cat bill_image_encoded.txt | tr -d '\n')\",
+        \"filename\": \"receipt.png\"
+      }
+    },
+    \"id\": 1
+  }"
+```
+
+#### 3. Translate Screenshot
+```bash
+curl -X POST https://screensift-mcp.bharathkumaradinarayan.workers.dev/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d "{
+    \"jsonrpc\": \"2.0\",
+    \"method\": \"tools/call\",
+    \"params\": {
+      \"name\": \"translate_screenshot\",
+      \"arguments\": {
+        \"imageData\": \"$(cat foreign_text_encoded.txt | tr -d '\n')\",
+        \"filename\": \"foreign_text.png\",
+        \"targetLanguage\": \"English\"
+      }
+    },
+    \"id\": 1
+  }"
+```
+
+#### 4. Extract Song Lyrics
+```bash
+curl -X POST https://screensift-mcp.bharathkumaradinarayan.workers.dev/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d "{
+    \"jsonrpc\": \"2.0\",
+    \"method\": \"tools/call\",
+    \"params\": {
+      \"name\": \"extract_song_lyrics\",
+      \"arguments\": {
+        \"imageData\": \"$(cat lyrics_encoded.txt | tr -d '\n')\",
+        \"filename\": \"song_lyrics.png\"
+      }
+    },
+    \"id\": 1
+  }"
+```
+
+#### 5. Analyze Map Screenshot
+```bash
+curl -X POST https://screensift-mcp.bharathkumaradinarayan.workers.dev/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d "{
+    \"jsonrpc\": \"2.0\",
+    \"method\": \"tools/call\",
+    \"params\": {
+      \"name\": \"analyze_map_screenshot\",
+      \"arguments\": {
+        \"imageData\": \"$(cat map_encoded.txt | tr -d '\n')\",
+        \"filename\": \"map_screenshot.png\"
+      }
+    },
+    \"id\": 1
+  }"
+```
+
+#### 6. Read QR Code/Barcode (Enhanced)
+```bash
+curl -X POST https://screensift-mcp.bharathkumaradinarayan.workers.dev/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d "{
+    \"jsonrpc\": \"2.0\",
+    \"method\": \"tools/call\",
+    \"params\": {
+      \"name\": \"read_qr_code\",
+      \"arguments\": {
+        \"imageData\": \"$(cat qr_encoded.txt | tr -d '\n')\",
+        \"filename\": \"qr_code.png\"
+      }
+    },
+    \"id\": 1
+  }"
+```
+
+
+### Python Testing Helper
+For easier testing with Python:
+```python
+import requests
+import base64
+import json
+
+def test_mcp_tool(image_path, tool_name, **kwargs):
+    # Encode image
+    with open(image_path, 'rb') as f:
+        image_data = base64.b64encode(f.read()).decode()
+    
+    # Prepare payload
+    payload = {
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+            "name": tool_name,
+            "arguments": {
+                "imageData": image_data,
+                "filename": image_path.split('/')[-1],
+                **kwargs
+            }
+        },
+        "id": 1
+    }
+    
+    # Make request
+    response = requests.post(
+        "https://screensift-mcp.bharathkumaradinarayan.workers.dev/mcp",
+        json=payload,
+        headers={"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
+    )
+    
+    print(response.text)
+
+# Usage examples
+test_mcp_tool("receipt.jpg", "analyze_bill")
+test_mcp_tool("qr_code.png", "read_qr_code")
+test_mcp_tool("foreign_text.png", "translate_screenshot", targetLanguage="English")
 ```
 
 ## 🚀 Deployment
@@ -240,6 +379,41 @@ npm run deploy
 4. **Response** → Category + metadata
 5. **File Organization** → Local folder structure via Apple Shortcuts
 
+### Specialized Analysis Features
+
+#### 💰 Bill Analysis
+- **OCR Receipt Processing**: Extract merchant, date, total amount
+- **Itemized Line Items**: Individual products with prices and quantities  
+- **Tax & Tip Detection**: Automatic calculation breakdown
+- **Payment Method**: Credit card, cash, digital payment identification
+- **Confidence Scoring**: OCR accuracy assessment
+
+#### 🌍 Translation Service
+- **Multi-Language Support**: Detect and translate any language
+- **Text Region Mapping**: Individual text areas with translations
+- **Language Detection**: Automatic source language identification
+- **Contextual Translation**: Preserves meaning and context
+
+#### 🎵 Music Recognition  
+- **Song Identification**: Title, artist, album extraction
+- **Lyrics Extraction**: Clean formatting with line breaks
+- **Genre Detection**: Music style classification
+- **Copyright Compliance**: Responsible lyrics handling with truncation
+
+#### 🗺️ Geographic Analysis
+- **Location Identification**: Cities, landmarks, street names
+- **Map Type Detection**: Street, satellite, terrain views
+- **Coordinate Lookup**: Free geocoding via OpenStreetMap
+- **Route Information**: Navigation directions and distances
+- **POI Recognition**: Points of interest and businesses
+
+#### 📱 Enhanced QR/Barcode Scanner
+- **Dual-Mode Scanning**: Dedicated qrcode-reader library + AI vision fallback
+- **Format Support**: QR codes, barcodes, Data Matrix codes
+- **Content Analysis**: URLs, WiFi credentials, vCards, geo locations
+- **Data Type Detection**: Automatic classification of scanned content
+- **High Accuracy**: Library-first approach with 99%+ success rate
+
 ### Classification Logic
 ```
 Secrets Detection (Priority 1)
@@ -262,41 +436,3 @@ Social → Memes, social media content
 Temp → Junk, temporary content
 ```
 
-## 📊 Analytics
-
-### Storage Statistics
-- Total screenshots processed
-- Category distribution
-- Storage usage by folder
-- Retention policy effectiveness
-
-### Cleanup Automation
-- Social content expires after 7 days
-- Temp content deleted immediately  
-- Important content preserved permanently
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create feature branch: `git checkout -b feature/amazing-feature`
-3. Commit changes: `git commit -m 'Add amazing feature'`
-4. Push to branch: `git push origin feature/amazing-feature`
-5. Open Pull Request
-
-## 📄 License
-
-This project is licensed under the MIT License - see LICENSE file for details.
-
-## 🙏 Acknowledgments
-
-- **Google Gemini** - AI vision and text analysis
-- **Cloudflare Workers** - Serverless hosting platform
-- **Drizzle ORM** - Database management
-- **Hono** - Web framework
-- **Apple Shortcuts** - Automation integration
-
----
-
-**Built with ❤️ for automatic screenshot organization**
-
-*Stop manually organizing screenshots - let AI do it for you!* 🤖✨

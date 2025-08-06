@@ -19,7 +19,9 @@
     "@hono/mcp": "0.1.1",
     "zod": "3.25.76",
     "@ai-sdk/google": "2.0.0",
-    "ai": "5.0.0"
+    "ai": "5.0.0",
+    "qrcode-reader": "^1.0.4",
+    "jimp": "^0.22.12"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "4.20250321.0",
