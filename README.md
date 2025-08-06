@@ -4,6 +4,9 @@
 
 > AI-powered screenshot classification and organization system with automatic folder management
 
+<img width="938" height="522" alt="tools" src="https://github.com/user-attachments/assets/d14e4f12-c995-4997-ab0b-133023af3484" />
+
+Different tools in MCP
 ## 🌟 Features
 
 ### 🤖 Smart AI Classification
@@ -79,7 +82,9 @@ Take screenshots and automatically:
 
 Server runs at `http://localhost:8787` 🎉
 
-**🌐 Live Demo:** `https://screensift-mcp.bharathkumaradinarayan.workers.dev`
+**🌐 Live Demo:** `https://screensift-mcp.bharathkumaradinarayan.workers.dev/mcp`
+
+<img width="1462" height="570" alt="Screenshot 2025-08-06 at 22 50 30" src="https://github.com/user-attachments/assets/a3a938e9-1089-483f-91c5-5f5a2f386f8e" />
 
 ## 📸 Apple Shortcut
 
